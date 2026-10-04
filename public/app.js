@@ -1097,14 +1097,18 @@ $('#btn-create-room').addEventListener('click', async () => {
   try {
     const body = { scenarioId, version };
     if (timed) body.stepDuration = stepDuration;
+    // 盲投：勾选才显式传 true；不勾选即省略该字段（公开投票旧用法）
+    const blind = $('#room-blind-toggle').checked;
+    if (blind) body.blindVote = true;
     const r = await api('/api/rooms', { method: 'POST', body });
     saveRoomCred(r.code, { hostToken: r.hostToken });
     $('#room-created').classList.remove('hidden');
     $('#room-join-out').textContent = r.joinCode;
     $('#room-host-out').textContent = r.hostToken;
-    toast(r.timed
-      ? `限时房间已开启（每步 ${r.stepDurationSeconds} 秒，绑定 v${r.version}），把加入码发给学员`
-      : `房间已开启（绑定 v${r.version}），把加入码发给学员`, 'ok');
+    toast(
+      (r.timed ? `限时房间已开启（每步 ${r.stepDurationSeconds} 秒，绑定 v${r.version}）` : `房间已开启（绑定 v${r.version}）`)
+        + (r.blindVote ? '，盲投模式：结算前仅显示已投人数' : '')
+        + '，把加入码发给学员', 'ok');
     loadRoomList();
   } catch (err) { toast(err.message, 'err'); }
 });
@@ -1152,7 +1156,9 @@ async function loadRoomList() {
               <td>v${r.version}</td>
               <td>${r.step_duration
                 ? `<span class="badge timed" title="限时模式：每步 ${r.step_duration} 秒">⏱️ ${r.step_duration}s/步</span>`
-                : '<span class="muted">不限时</span>'}</td>
+                : '<span class="muted">不限时</span>'}${r.blind_vote
+                ? ' <span class="badge blind" title="盲投模式：结算前仅显示已投人数，姓名与选项对应关系全程不公开">🕶️ 盲投</span>'
+                : ''}</td>
               <td class="${r.status === 'active' ? 'status-active' : 'status-ended'}">${r.status === 'active' ? '进行中' : '已结束'}</td>
               <td>${r.step_no}</td>
               <td>${r.member_count}</td>
@@ -1272,9 +1278,11 @@ function renderRoom() {
   $('#room-score').className = scoreClass(d.totalScore);
   $('#room-members').textContent = d.memberCount;
   $('#room-votes').textContent = d.totalVotes;
-  $('#room-role').innerHTML = d.isHost
+  $('#room-role').innerHTML = (d.blindVote ? ' · <span class="badge blind" title="盲投模式：结算前仅显示已投人数，姓名与选项对应关系全程不公开">🕶️ 盲投</span>' : '') + (d.isHost
     ? ' · <span class="badge v">🎤 主持人</span>'
-    : (d.myVote !== null || roomCtx.memberToken ? ' · <span class="badge draft">🙋 学员</span>' : ' · <span class="muted">👀 围观（加入房间后可投票）</span>');
+    : (d.myVote !== null || roomCtx.memberToken ? ' · <span class="badge draft">🙋 学员</span>' : ' · <span class="muted">👀 围观（加入房间后可投票）</span>'));
+
+  renderBlindBar();
 
   const timer = d.timer || { timed: !!d.timed, phase: 'open' };
   const isPaused = timer.phase === 'awaiting_reopen';
@@ -1296,7 +1304,7 @@ function renderRoom() {
       <span class="state-val ${st.value ? 'yes' : 'no'}">${st.value ? '● 是' : '○ 否'}</span>
     </div>`).join('');
 
-  // 选项（带聚合票数；未结算时学员看不到他人选票，只有总数）
+  // 选项（带聚合票数；未结算时学员看不到他人选票，只有总数；盲投阶段连票数也不显示）
   const optBox = $('#room-option-list');
   if (d.status === 'ended') {
     optBox.innerHTML = '<div class="muted">本场共识演练已结束。</div>';
@@ -1310,17 +1318,21 @@ function renderRoom() {
       : (deadlineBlocked
         ? '<div class="timer-notice end">⏱️ 本步已到截止时间，正在自动结算，请稍候刷新…</div>'
         : '');
+    // 盲投阶段：不显示各选项票数（保密徽章代替）；结算后各步票数在“已结算路径”公布
+    const voteBadge = (o) => d.blindActive
+      ? '<span class="vote-badge blind" title="盲投进行中：各选项票数保密，结算后公布">🕶️ 保密</span>'
+      : `<span class="vote-badge" title="本选项当前票数">${o.votes} 票</span>`;
     const avail = d.options.map((o) => `
       <button class="option-btn room-opt ${myOpt === o.id ? 'my-vote' : ''}" data-vote="${esc(o.id)}" ${canVote ? '' : 'disabled'}>
         ${esc(o.label)}
-        <span class="vote-badge" title="本选项当前票数">${o.votes} 票</span>
+        ${voteBadge(o)}
         ${myOpt === o.id ? '<span class="my-vote-tag">✓ 我的投票</span>' : ''}
         ${o.conditions.length ? `<span class="conds">条件：${o.conditions.map((c) => condText(d, c)).join('；')}</span>` : ''}
       </button>`).join('');
     const unavail = (d.unavailableOptions || []).map((o) => `
       <button class="option-btn disabled-opt" disabled>
         🔒 ${esc(o.label)}
-        <span class="vote-badge">${o.votes} 票</span>
+        ${voteBadge(o)}
         <span class="lock">${esc(o.reason)}：${o.failingConditions.map((f) => `${esc(f.stateName)} 需为「${f.required ? '是' : '否'}」`).join('；')}</span>
       </button>`).join('');
     optBox.innerHTML = (avail || '<div class="muted">当前没有可投选项。</div>') + unavail
@@ -1328,17 +1340,25 @@ function renderRoom() {
       + (roomCtx.memberToken ? '' : '<div class="hint" style="margin-top:6px">你正以围观身份查看；用加入码加入房间后才能投票。</div>');
   }
 
-  // 主持台：逐人投票明细 + 结算 + 重开
+  // 主持台：逐人投票明细（盲投房间不公开，改为成员名单）+ 结算 + 重开
   const hostPanel = $('#room-host-panel');
   if (d.isHost && d.status === 'active') {
     hostPanel.hidden = false;
-    const votes = d.votes || [];
-    $('#room-vote-detail').innerHTML = `
-      <div class="muted" style="margin-bottom:6px">成员 ${d.memberCount} 人，本步已投 ${d.totalVotes} 票${votes.length ? '：' : '。'}</div>
-      ${votes.length ? `<ul class="vote-detail">${votes.map((v) => {
-        const opt = d.options.find((o) => o.id === v.optionId);
-        return `<li>${esc(v.name)} → 「${esc(opt ? opt.label : v.optionId)}」</li>`;
-      }).join('')}</ul>` : ''}`;
+    if (d.blindVote) {
+      // 盲投：主持人同样只能看到已投人数；逐人选项全程不公开，但成员名单可见
+      const members = d.members || [];
+      $('#room-vote-detail').innerHTML = `
+        <div class="muted" style="margin-bottom:6px">🕶️ 盲投进行中：成员 ${d.memberCount} 人，本步已投 <b>${d.totalVotes}</b> 人；各选项票数与逐人明细在结算前不公开，姓名与选项的对应关系全程不公开。</div>
+        ${members.length ? `<ul class="vote-detail">${members.map((m) => `<li>${esc(m.name)}</li>`).join('')}</ul>` : ''}`;
+    } else {
+      const votes = d.votes || [];
+      $('#room-vote-detail').innerHTML = `
+        <div class="muted" style="margin-bottom:6px">成员 ${d.memberCount} 人，本步已投 ${d.totalVotes} 票${votes.length ? '：' : '。'}</div>
+        ${votes.length ? `<ul class="vote-detail">${votes.map((v) => {
+          const opt = d.options.find((o) => o.id === v.optionId);
+          return `<li>${esc(v.name)} → 「${esc(opt ? opt.label : v.optionId)}」</li>`;
+        }).join('')}</ul>` : ''}`;
+    }
     const settleBtn = $('#btn-settle');
     const reopenBtn = $('#btn-reopen');
     settleBtn.disabled = d.totalVotes === 0 || isPaused;
@@ -1403,6 +1423,29 @@ function renderRoomCountdown() {
     + (remainMs === null ? '' : ` · 剩余 <b class="timer-remain">${fmt(remainMs)}</b>`)
     + ` · 到点有票自动结算，零票暂停待重开`
     + (timer.reopenedCount ? ` · 本步已重开 ${timer.reopenedCount} 次` : '');
+}
+
+// 盲投阶段提示条：盲投房间全程展示；结算前强调保密中，结束后说明结果已公布
+function renderBlindBar() {
+  if (!roomCtx || !roomCtx.data) return;
+  const d = roomCtx.data;
+  const bar = $('#room-blind-bar');
+  if (!d.blindVote) {
+    bar.className = 'blind-bar hidden';
+    bar.textContent = '';
+    return;
+  }
+  bar.classList.remove('hidden');
+  if (d.blindActive) {
+    const paused = d.timer && d.timer.phase === 'awaiting_reopen';
+    bar.className = 'blind-bar' + (paused ? ' pause' : '');
+    bar.innerHTML = `🕶️ <b>盲投进行中</b>：第 <b>${d.stepNo}</b> 步结算前，所有人（含主持人）只能看到已投人数（当前 <b>${d.totalVotes}</b> 人），`
+      + '各选项票数与逐人明细暂不公开；结算后公布该步各选项票数与获胜处置，姓名与选项的对应关系全程不公开。'
+      + (paused ? '（本步到点零票已暂停，重开期间继续保密）' : '');
+  } else {
+    bar.className = 'blind-bar revealed';
+    bar.innerHTML = '🕶️ <b>盲投房间</b>：本场已结束，各步投票结果已在“已结算路径”公布；姓名与选项的对应关系全程未公开。';
+  }
 }
 
 function roomBanner(msg, kind) {

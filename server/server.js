@@ -438,15 +438,18 @@ app.get('/api/scenarios/:id/versions/:version/coverage', (req, res) => {
 
 // ---------- 共识演练房间（多人投票推进同一条会话路径） ----------
 
-// 开启房间（培训师）：{scenarioId, version?, stepDuration?}。version 缺省为当前最新发布版；
+// 开启房间（培训师）：{scenarioId, version?, stepDuration?, blindVote?}。version 缺省为当前最新发布版；
 // 房间绑定该冻结版本，后续发布新版本不改变本场规则。
 // stepDuration 省略/null 为不限时旧用法；否则为限时模式每步秒数（30..3600 的整数）。
+// blindVote 省略/null 为公开投票旧用法；否则必须为布尔值（true=盲投），非布尔报错且不开房；
+// 盲投选择创建后不可更改。
 // 成功返回房间码（即学员加入码）与主持凭证。
 app.post('/api/rooms', (req, res) => {
-  const { scenarioId, version, stepDuration } = req.body || {};
+  const { scenarioId, version, stepDuration, blindVote } = req.body || {};
   if (!scenarioId) return res.status(400).json({ error: '缺少 scenarioId' });
-  const result = roomOps.createRoom(db, { scenarioId, version, stepDuration });
+  const result = roomOps.createRoom(db, { scenarioId, version, stepDuration, blindVote });
   if (!result.ok) return res.status(result.status).json({ error: result.error, errorCode: result.errorCode });
+  const blind = result.room.blind_vote === 1;
   res.status(201).json({
     ok: true,
     code: result.room.code,
@@ -458,9 +461,13 @@ app.post('/api/rooms', (req, res) => {
     sessionCode: result.room.session_code,
     stepDurationSeconds: result.room.step_duration ?? null, // 非空=限时模式每步秒数
     timed: result.room.step_duration != null,
-    note: result.room.step_duration != null
+    blindVote: blind, // true=盲投房间（创建后不可更改）
+    note: (result.room.step_duration != null
       ? `限时房间：每步 ${result.room.step_duration} 秒，到点有票自动按多数决结算（下一步从实际结算时重新计时），到点零票暂停待主持人重开；截止前可改票或由主持人提前结算。`
-      : '房间已绑定该冻结版本，后续发布新版本不影响本场规则；学员凭加入码取得成员凭证后投票，主持人凭主持凭证结算。',
+      : '房间已绑定该冻结版本，后续发布新版本不影响本场规则；学员凭加入码取得成员凭证后投票，主持人凭主持凭证结算。')
+      + (blind
+        ? '本房间为盲投：结算前所有人（含主持人）只能看到已投人数，结算后公布各选项票数，姓名与选项的对应关系全程不公开。'
+        : ''),
   });
 });
 
@@ -472,6 +479,8 @@ app.get('/api/rooms', (req, res) => {
 // 房间现状：当前步号、可选处置与聚合票数、已结算路径、累计分。
 // 可选凭证：query 参数 memberToken / hostToken（或 x-member-token / x-host-token 请求头）。
 // 成员凭证附加 myVote；主持凭证附加逐人投票明细与成员名单；未结算前学员看不到他人选票。
+// 盲投房间：结算前所有视图只含已投人数（各选项票数为 null），主持人也看不到逐人明细
+// （姓名与选项的对应关系全程不公开），已结算步的票数经 settlements 照常公布。
 app.get('/api/rooms/:code', (req, res) => {
   const viewer = {};
   const mt = req.query.memberToken || req.get('x-member-token');

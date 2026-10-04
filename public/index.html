@@ -121,6 +121,13 @@
                 <span class="muted">截止前可改票或由主持人提前结算；每步从实际推进时刻开始计时。</span>
               </div>
             </div>
+            <div class="field timed-field">
+              <label class="checkbox">
+                <input type="checkbox" id="room-blind-toggle" />
+                <b>盲投模式</b>（结算前所有人（含主持人）只能看到已投人数；结算后公布各选项票数，姓名与选项的对应关系全程不公开）
+              </label>
+              <div class="muted" style="margin-top:4px">不勾选为公开投票（旧用法）；盲投选择创建后不可更改。</div>
+            </div>
             <button class="btn primary" id="btn-create-room" style="width:100%">开启房间</button>
             <div id="room-created" class="room-created hidden">
               <div>学员加入码：<code id="room-join-out" class="big-code"></code></div>
@@ -165,6 +172,7 @@
               <span id="room-role"></span>
             </div>
             <div id="room-timer-bar" class="timer-bar hidden"></div>
+            <div id="room-blind-bar" class="blind-bar hidden"></div>
           </div>
           <button class="btn ghost" id="btn-exit-room">返回列表</button>
         </div>
