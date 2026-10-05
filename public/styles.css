@@ -424,5 +424,25 @@ hr.sep { border: none; border-top: 1px solid var(--line); margin: 14px 0; }
 .timer-notice { margin-top: 8px; padding: 7px 10px; border-radius: 8px; font-size: 12.5px; }
 .timer-notice.pause { background: var(--warn-bg); color: var(--warn); border: 1px solid #ecd9a6; }
 .timer-notice.end { background: var(--err-bg); color: var(--err); border: 1px solid #f3c2bd; }
+
+/* 盲投模式 */
+.badge.blind { background: #f3efff; color: #5b3fa6; border: 1px solid #d9cff5; }
+.blind-bar {
+  margin-top: 8px;
+  font-size: 12.5px;
+  color: #4a3585;
+  background: #f3efff;
+  border: 1px solid #d9cff5;
+  border-radius: 8px;
+  padding: 6px 12px;
+}
+.blind-bar.pause {
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-color: #ecd9a6;
+}
+.blind-notice { margin-top: 8px; padding: 7px 10px; border-radius: 8px; font-size: 12.5px; background: #f3efff; color: #4a3585; border: 1px solid #d9cff5; }
+.vote-badge.blind { background: #efeafb; color: #5b3fa6; border: 1px dashed #c9baf0; }
+.blind-host-note { padding: 7px 10px; border-radius: 8px; font-size: 12.5px; background: #f3efff; color: #4a3585; border: 1px solid #d9cff5; }
 .host-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
 .auto-tag { color: var(--brand-dark); font-weight: 600; }

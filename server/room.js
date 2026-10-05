@@ -74,6 +74,26 @@ function isTimed(room) {
   return Number.isInteger(room.step_duration) && room.step_duration > 0;
 }
 
+function isBlind(room) {
+  return room.blind_vote === 1;
+}
+
+// 归一化盲投参数：仅接受 JSON 布尔值。
+//  - 未指定（字段缺省）→ false：维持现有公开投票规则（旧用法），存量房间同样为 false；
+//  - true / false → 按布尔值开房；
+//  - 其余任何类型（null、字符串、数字等）一律报错且不建房，不做隐式转换。
+// 盲投选择创建后不可更改（房间没有任何修改该标记的入口）。
+function normalizeBlind(raw) {
+  if (raw === undefined) return { ok: true, blind: false };
+  if (typeof raw !== 'boolean') {
+    return {
+      ok: false,
+      error: `盲投参数非法：${JSON.stringify(raw)}（blind 必须是布尔值 true/false；省略该字段为公开投票的旧用法）`,
+    };
+  }
+  return { ok: true, blind: raw };
+}
+
 // 当前步的票数聚合（optionId -> 票数）
 function currentTallies(db, roomCode, stepNo) {
   const rows = db.prepare(`
@@ -292,6 +312,14 @@ function timedInfo(db, room, session, atMs) {
  *  - 有效主持凭证：附加 votes（逐人投票明细）与 members（成员名单）；
  *  - 未结算前，任何视图都不暴露“谁投了什么”给学员。
  * 凭证提供了但无效时返回 401，不静默降级。
+ *
+ * 盲投房间（blind_vote=1）在“当前步结算前”额外保密：
+ *  - 围观者、学员、主持人都只能看到已投人数（totalVotes），各选项 votes 一律为 null，
+ *    不返回逐人选项明细（即使持主持凭证，votes 也为 null）；
+ *  - 学员凭有效成员凭证仍可查看/修改自己的票（myVote 照常返回）；
+ *  - 主持人仍可查看成员名单（members 照常返回）；
+ *  - 已结算步的结果（settlements / path 中的各选项票数与获胜处置）保持可见，
+ *    但任何留痕都不含姓名↔选项对应。
  */
 function buildRoomSnapshot(db, room, viewer = {}, atMs = nowMs()) {
   const session = getRoomSession(db, room);
@@ -302,8 +330,14 @@ function buildRoomSnapshot(db, room, viewer = {}, atMs = nowMs()) {
   const base = buildSnapshot(content, session, room.scenario_id, room.version);
   const sc = db.prepare('SELECT title FROM scenarios WHERE id = ?').get(room.scenario_id);
 
+  const blind = isBlind(room);
   const tallies = currentTallies(db, room.code, session.step_no);
-  const withVotes = (list) => list.map((o) => ({ ...o, votes: tallies.get(o.id) || 0 }));
+  // 盲投房当前步（结算前）：只保留已投人数，不暴露各选项票数；
+  // 公开房（旧用法）：各选项附当前聚合票数。
+  const withVotes = (list) => list.map((o) => ({
+    ...o,
+    votes: blind ? null : (tallies.get(o.id) || 0),
+  }));
   const totalVotes = [...tallies.values()].reduce((a, b) => a + b, 0);
   const memberCount = db.prepare('SELECT COUNT(*) AS c FROM room_members WHERE room_code = ?').get(room.code).c;
 
@@ -321,11 +355,13 @@ function buildRoomSnapshot(db, room, viewer = {}, atMs = nowMs()) {
     currentNode: base.currentNode,
     startNodeTitle: base.startNodeTitle,
     states: base.states,
-    // 投票前不暴露分值/说明（与单人演练一致）；每项附当前聚合票数
+    // 投票前不暴露分值/说明（与单人演练一致）；盲投房当前步 votes=null（只给已投人数）
     options: withVotes(base.availableOptions),
     unavailableOptions: withVotes(base.unavailableOptions),
     memberCount,
     totalVotes,
+    // 盲投模式：true=当前步结算前仅公开已投人数；创建后不可更改
+    blind,
     // 限时模式：false 为旧用法；true 时附每步时长、本步截止时间/剩余时间/阶段
     timed: timer.timed,
     stepDurationSeconds: timer.stepDurationSeconds,
@@ -362,12 +398,18 @@ function buildRoomSnapshot(db, room, viewer = {}, atMs = nowMs()) {
       return { ok: false, status: 401, errorCode: 'HOST_TOKEN_INVALID', error: '主持凭证无效' };
     }
     snapshot.isHost = true;
-    // 主持人可见逐人投票明细与成员名单
-    snapshot.votes = db.prepare(`
-      SELECT m.name, v.option_id, v.updated_at FROM room_votes v
-        LEFT JOIN room_members m ON m.room_code = v.room_code AND m.member_token = v.member_token
-       WHERE v.room_code = ? AND v.step_no = ? ORDER BY v.updated_at, m.id
-    `).all(room.code, session.step_no).map((r) => ({ name: r.name || '（匿名学员）', optionId: r.option_id }));
+    if (blind) {
+      // 盲投当前步：主持人也看不到逐人选项与各选项票数；成员名单仍可见。
+      snapshot.votes = null;
+    } else {
+      // 公开房：主持人可见逐人投票明细
+      snapshot.votes = db.prepare(`
+        SELECT m.name, v.option_id, v.updated_at FROM room_votes v
+          LEFT JOIN room_members m ON m.room_code = v.room_code AND m.member_token = v.member_token
+         WHERE v.room_code = ? AND v.step_no = ? ORDER BY v.updated_at, m.id
+      `).all(room.code, session.step_no).map((r) => ({ name: r.name || '（匿名学员）', optionId: r.option_id }));
+    }
+    // 盲投房主持人仍可查看成员名单（不含各自选项）
     snapshot.members = db.prepare('SELECT name, created_at FROM room_members WHERE room_code = ? ORDER BY id')
       .all(room.code).map((r) => ({ name: r.name || '（匿名学员）', joinedAt: r.created_at }));
   }
@@ -378,9 +420,11 @@ function buildRoomSnapshot(db, room, viewer = {}, atMs = nowMs()) {
  * 开启共识演练房间（培训师）。
  * version 缺省为该情境当前最新发布版；指定时必须是已发布（≤ current_version）的版本。
  * stepDuration 缺省/null 为不限时旧用法；否则必须为 30..3600 的整数秒。
+ * blind 仅接受布尔值：缺省/false 为公开投票旧用法，true 为盲投（结算前只公开已投人数）；
+ * 非布尔值（null、字符串、数字等）返回 BLIND_INVALID，不建房；盲投选择创建后不可更改。
  * 房间绑定该冻结版本：后续发布新版本不改变本场规则。
  */
-function createRoom(db, { scenarioId, version, stepDuration }) {
+function createRoom(db, { scenarioId, version, stepDuration, blind }) {
   const sc = db.prepare('SELECT * FROM scenarios WHERE id = ?').get(scenarioId);
   if (!sc) return { ok: false, status: 404, errorCode: 'SCENARIO_NOT_FOUND', error: '情境不存在' };
   if (sc.current_version < 1) {
@@ -389,6 +433,10 @@ function createRoom(db, { scenarioId, version, stepDuration }) {
   const dur = normalizeStepDuration(stepDuration);
   if (!dur.ok) {
     return { ok: false, status: 400, errorCode: 'STEP_DURATION_INVALID', error: dur.error };
+  }
+  const blindOpt = normalizeBlind(blind);
+  if (!blindOpt.ok) {
+    return { ok: false, status: 400, errorCode: 'BLIND_INVALID', error: blindOpt.error };
   }
   const v = version === undefined || version === null ? sc.current_version : Number(version);
   if (!Number.isInteger(v) || v < 1) {
@@ -413,8 +461,8 @@ function createRoom(db, { scenarioId, version, stepDuration }) {
           VALUES (?, ?, ?, ?, ?, 0, 'active', '[]', ?, ?, ?)
         `).run(sessionCode, sc.id, v, content.startNodeId, initialMask(content),
           '共识演练房间', sessionCode, roomCode);
-        db.prepare('INSERT INTO rooms (code, host_token, scenario_id, version, session_code, step_duration) VALUES (?, ?, ?, ?, ?, ?)')
-          .run(roomCode, hostToken, sc.id, v, sessionCode, dur.seconds);
+        db.prepare('INSERT INTO rooms (code, host_token, scenario_id, version, session_code, step_duration, blind_vote) VALUES (?, ?, ?, ?, ?, ?, ?)')
+          .run(roomCode, hostToken, sc.id, v, sessionCode, dur.seconds, blindOpt.blind ? 1 : 0);
         // 限时房间：第 0 步开始即持久写入截止时间
         if (dur.seconds !== null) {
           const room = db.prepare('SELECT * FROM rooms WHERE code = ?').get(roomCode);
@@ -715,11 +763,11 @@ function reopenRoom(db, { code, hostToken, observedStepNo }) {
   };
 }
 
-/** 最近房间列表（含状态、步号、成员数、限时配置；不暴露任何凭证与投票明细）。 */
+/** 最近房间列表（含状态、步号、成员数、限时/盲投配置；不暴露任何凭证与投票明细）。 */
 function listRooms(db) {
   return db.prepare(`
     SELECT r.code, r.scenario_id, s.title AS scenario_title, r.version, r.session_code,
-           r.step_duration, se.status, se.step_no, r.created_at,
+           r.step_duration, r.blind_vote, se.status, se.step_no, r.created_at,
            (SELECT COUNT(*) FROM room_members m WHERE m.room_code = r.code) AS member_count
       FROM rooms r
       JOIN scenarios s ON s.id = r.scenario_id

@@ -121,6 +121,12 @@
                 <span class="muted">截止前可改票或由主持人提前结算；每步从实际推进时刻开始计时。</span>
               </div>
             </div>
+            <div class="field">
+              <label class="checkbox">
+                <input type="checkbox" id="room-blind-toggle" />
+                <b>🔒 盲投模式</b>（当前步结算前仅公开已投人数，不显示各选项票数与逐人选项；学员凭成员凭证仍可查看/修改自己的票；结算后公布各选项票数与获胜处置，永不公开姓名对应；创建后不可更改）
+              </label>
+            </div>
             <button class="btn primary" id="btn-create-room" style="width:100%">开启房间</button>
             <div id="room-created" class="room-created hidden">
               <div>学员加入码：<code id="room-join-out" class="big-code"></code></div>
@@ -164,6 +170,7 @@
               · 本步已投 <b id="room-votes">0</b> 票
               <span id="room-role"></span>
             </div>
+            <div id="room-blind-bar" class="blind-bar hidden"></div>
             <div id="room-timer-bar" class="timer-bar hidden"></div>
           </div>
           <button class="btn ghost" id="btn-exit-room">返回列表</button>

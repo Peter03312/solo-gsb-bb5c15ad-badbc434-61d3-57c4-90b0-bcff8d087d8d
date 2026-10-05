@@ -61,6 +61,9 @@ function initSchema() {
   -- 房间本身只记录冻结版本绑定与凭证，当前步号/状态一律以绑定会话为准。
   -- step_duration 非空时为限时房间：每步统一倒计时（秒，30..3600），
   -- NULL 表示旧用法（不限时，仅主持人手动结算）。
+  -- blind_vote=1 时为盲投房间：当前步结算前对所有人（含主持人）隐藏各选项票数
+  -- 与逐人选项，只公开已投人数；学员凭成员凭证仍可查看/修改自己的票。
+  -- 创建后不可更改；0 / NULL 为公开投票（旧用法），存量房间一律公开。
   CREATE TABLE IF NOT EXISTS rooms (
     code            TEXT PRIMARY KEY,        -- 房间码，即学员加入码
     host_token      TEXT NOT NULL UNIQUE,    -- 主持凭证（结算时出示）
@@ -68,6 +71,7 @@ function initSchema() {
     version         INTEGER NOT NULL,        -- 开启时选定的已发布冻结版本；后续发布不影响本场
     session_code    TEXT NOT NULL REFERENCES sessions(code) ON DELETE CASCADE,
     step_duration   INTEGER,                 -- 限时模式每步时长（秒）；NULL=不限时（旧用法）
+    blind_vote      INTEGER NOT NULL DEFAULT 0, -- 1=盲投（结算前仅公开已投人数）；0=公开投票（旧用法）
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
   );
@@ -136,6 +140,10 @@ function initSchema() {
   const roomCols = db.prepare('PRAGMA table_info(rooms)').all();
   if (!roomCols.some((c) => c.name === 'step_duration')) {
     db.exec('ALTER TABLE rooms ADD COLUMN step_duration INTEGER');
+  }
+  // 盲投模式：1=盲投（结算前只公开已投人数）；缺列的老库补列，存量房间默认 0=公开投票。
+  if (!roomCols.some((c) => c.name === 'blind_vote')) {
+    db.exec('ALTER TABLE rooms ADD COLUMN blind_vote INTEGER NOT NULL DEFAULT 0');
   }
   const settleCols = db.prepare('PRAGMA table_info(room_settlements)').all();
   if (!settleCols.some((c) => c.name === 'kind')) {

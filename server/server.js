@@ -438,14 +438,16 @@ app.get('/api/scenarios/:id/versions/:version/coverage', (req, res) => {
 
 // ---------- 共识演练房间（多人投票推进同一条会话路径） ----------
 
-// 开启房间（培训师）：{scenarioId, version?, stepDuration?}。version 缺省为当前最新发布版；
+// 开启房间（培训师）：{scenarioId, version?, stepDuration?, blind?}。version 缺省为当前最新发布版；
 // 房间绑定该冻结版本，后续发布新版本不改变本场规则。
 // stepDuration 省略/null 为不限时旧用法；否则为限时模式每步秒数（30..3600 的整数）。
+// blind 仅接受布尔值：省略/false 为公开投票旧用法，true 为盲投（当前步结算前任何人只看到
+// 已投人数，不显示各选项票数或逐人选项；学员凭成员凭证仍可查看/修改自己的票）；非布尔值报错且不建房。
 // 成功返回房间码（即学员加入码）与主持凭证。
 app.post('/api/rooms', (req, res) => {
-  const { scenarioId, version, stepDuration } = req.body || {};
+  const { scenarioId, version, stepDuration, blind } = req.body || {};
   if (!scenarioId) return res.status(400).json({ error: '缺少 scenarioId' });
-  const result = roomOps.createRoom(db, { scenarioId, version, stepDuration });
+  const result = roomOps.createRoom(db, { scenarioId, version, stepDuration, blind });
   if (!result.ok) return res.status(result.status).json({ error: result.error, errorCode: result.errorCode });
   res.status(201).json({
     ok: true,
@@ -458,9 +460,15 @@ app.post('/api/rooms', (req, res) => {
     sessionCode: result.room.session_code,
     stepDurationSeconds: result.room.step_duration ?? null, // 非空=限时模式每步秒数
     timed: result.room.step_duration != null,
-    note: result.room.step_duration != null
-      ? `限时房间：每步 ${result.room.step_duration} 秒，到点有票自动按多数决结算（下一步从实际结算时重新计时），到点零票暂停待主持人重开；截止前可改票或由主持人提前结算。`
-      : '房间已绑定该冻结版本，后续发布新版本不影响本场规则；学员凭加入码取得成员凭证后投票，主持人凭主持凭证结算。',
+    blind: result.room.blind_vote === 1, // true=盲投（结算前只公开已投人数，创建后不可更改）
+    note: [
+      result.room.step_duration != null
+        ? `限时房间：每步 ${result.room.step_duration} 秒，到点有票自动按多数决结算（下一步从实际结算时重新计时），到点零票暂停待主持人重开；截止前可改票或由主持人提前结算。`
+        : '房间已绑定该冻结版本，后续发布新版本不影响本场规则；学员凭加入码取得成员凭证后投票，主持人凭主持凭证结算。',
+      result.room.blind_vote === 1
+        ? '盲投房间：当前步结算前仅公开已投人数，不显示各选项票数或逐人选项（主持人同样不可见）；结算后公布各选项票数与获胜处置，始终不公开姓名与选项的对应关系；盲投设置创建后不可更改。'
+        : '',
+    ].filter(Boolean).join(''),
   });
 });
 
